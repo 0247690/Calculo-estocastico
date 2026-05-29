@@ -1,0 +1,53 @@
+print("\n" + "=" * 60)
+print("  LABORATORIO 2: Volatilidad realizada y ventanas móviles")
+print("=" * 60)
+
+# ── Parámetros configurables ─────────────────────────────────
+TICKER_L2  = "SPY"
+INICIO_L2  = "2018-01-01"
+FIN_L2     = "2024-01-01"
+VENTANAS   = [21, 63, 126]      # días: ≈ 1 mes, 3 meses, 6 meses
+
+# ── Descarga y log-retornos ──────────────────────────────────
+datos_l2   = yf.download(TICKER_L2, start=INICIO_L2, end=FIN_L2,
+                          auto_adjust=True, progress=False)["Close"].dropna()
+log_ret_l2 = np.log(datos_l2 / datos_l2.shift(1)).dropna()
+
+print(f"\nActivo: {TICKER_L2}  |  Periodo: {INICIO_L2} → {FIN_L2}")
+print(f"Observaciones: {len(datos_l2)}")
+
+# ── Cálculo de volatilidad rodante anualizada ────────────────
+vol_series = {}
+for w in VENTANAS:
+    vol_series[f"Vol {w}d"] = log_ret_l2.rolling(w).std().squeeze() * np.sqrt(252)
+
+vol_df = pd.DataFrame(vol_series).dropna(how="all")
+
+# ── Gráfica ──────────────────────────────────────────────────
+colores = ["steelblue", "darkorange", "seagreen"]
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+
+# Panel superior: precio
+ax1.plot(datos_l2.index, datos_l2.values, color="crimson", lw=1.5)
+ax1.set_title(f"Precio ajustado – {TICKER_L2}")
+ax1.set_ylabel("Precio (USD)")
+
+# Panel inferior: volatilidad rodante
+for col, c in zip(vol_df.columns, colores):
+    ax2.plot(vol_df.index, vol_df[col] * 100, label=col, lw=1.2, color=c)
+ax2.set_title("Volatilidad realizada anualizada (%)")
+ax2.set_ylabel("Volatilidad (%)")
+ax2.set_xlabel("Fecha")
+ax2.legend(fontsize=9)
+ax2.axhline(y=20, ls="--", lw=0.8, color="gray", alpha=0.6,
+            label="Referencia 20%")
+
+plt.tight_layout()
+plt.savefig("lab2_volatilidad.png", bbox_inches="tight")
+plt.show()
+
+# Estadísticos resumen
+print("\nEstadísticos de volatilidad anualizada (%):")
+print((vol_df * 100).describe().round(2).to_string())
+print("\nObservación: Se aprecia clustering — periodos de alta volatilidad")
+print("(ej. COVID-19, 2022) se agrupan, consistente con modelos GARCH/SV.")
