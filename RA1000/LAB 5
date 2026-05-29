@@ -1,0 +1,121 @@
+print("\n" + "=" * 60)
+print("  LABORATORIO 5: Opción Parisina – Reloj de Barrera")
+print("=" * 60)
+
+# ── Parámetros configurables ─────────────────────────────────
+TICKER_L5  = "SPY"
+INICIO_L5  = "2021-01-01"
+FIN_L5     = "2024-01-01"
+K_L5       = 450.0
+T_L5       = 1.0
+r_L5       = 0.05
+H_L5       = 420.0        # Barrera (por debajo desactiva)
+N_SIM_L5   = 80_000
+N_PASOS_L5 = 252
+RELOJES    = [5, 10, 15, 20, 30, 45, 60]   # duraciones D a evaluar
+SEED_L5    = 2024
+
+# ── Calibración ─────────────────────────────────────────────
+datos_l5   = yf.download(TICKER_L5, start=INICIO_L5, end=FIN_L5,
+                          auto_adjust=True, progress=False)["Close"].dropna()
+log_ret_l5 = np.log(datos_l5 / datos_l5.shift(1)).dropna()
+sigma_l5   = (log_ret_l5.std() * np.sqrt(252)).iloc[0]
+S0_l5      = float(datos_l5.iloc[-1])
+
+print(f"\nActivo: {TICKER_L5}  |  S0 = {S0_l5:.2f}  |  K = {K_L5}  |  H = {H_L5}")
+print(f"σ = {sigma_l5:.4f}  |  r = {r_L5}  |  T = {T_L5}")
+print(f"Simulaciones: {N_SIM_L5:,}  |  Relojes D: {RELOJES}")
+
+# ── Simulación de trayectorias ────────────────────────────────
+np.random.seed(SEED_L5)
+dt_l5  = T_L5 / N_PASOS_L5
+fact   = np.exp((r_L5 - 0.5 * sigma_l5**2) * dt_l5)
+dif    = sigma_l5 * np.sqrt(dt_l5)
+
+Z_l5   = np.random.standard_normal((N_PASOS_L5, N_SIM_L5))
+S_l5   = np.zeros((N_PASOS_L5 + 1, N_SIM_L5))
+S_l5[0] = S0_l5
+for t in range(1, N_PASOS_L5 + 1):
+    S_l5[t] = S_l5[t - 1] * fact * np.exp(dif * Z_l5[t - 1])
+
+# Máscara de estar por debajo de la barrera (0/1)
+bajo_barrera = (S_l5 < H_L5).astype(int)   # shape (N_PASOS+1, N_SIM)
+
+# ── Función: precio parisino para un reloj D ─────────────────
+def precio_parisino(D, S_mat, bajo_mat, K, r, T, n_pasos):
+    """Call parisina: se desactiva si el activo permanece D días
+    consecutivos por debajo de H."""
+    n_sim = S_mat.shape[1]
+    desact = np.zeros(n_sim, dtype=bool)
+    contador = np.zeros(n_sim, dtype=int)
+
+    for t in range(1, n_pasos + 1):
+        abajo_t = bajo_mat[t].astype(bool)
+        contador[abajo_t]  += 1
+        contador[~abajo_t]  = 0
+        desact |= (contador >= D)
+
+    # Payoff call para paths no desactivados
+    ST      = S_mat[-1]
+    payoff  = np.where(desact, 0.0, np.maximum(ST - K, 0.0))
+    precio  = np.exp(-r * T) * payoff.mean()
+    return precio
+
+# ── Barrido de relojes D ─────────────────────────────────────
+resultados_l5 = []
+for D in RELOJES:
+    p = precio_parisino(D, S_l5, bajo_barrera, K_L5, r_L5, T_L5, N_PASOS_L5)
+    resultados_l5.append({"D (días)": D, "Precio parisino": round(p, 4)})
+    print(f"  D = {D:3d} días  →  Precio = {p:.4f}")
+
+df_paris = pd.DataFrame(resultados_l5)
+
+# Precio call europea sin barrera (referencia)
+# The bs_precio function was defined in a previous cell (lab 3)
+# but is not available in the current execution context (new cell).
+# I will add the function definition here to ensure it's available.
+def bs_precio(S, K, T, r, sigma, tipo="call"):
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if tipo == "call":
+        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    else:
+        return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+precio_ref = bs_precio(S0_l5, K_L5, T_L5, r_L5, sigma_l5, "call")
+print(f"\n  Ref. Call Europea (sin barrera) = {precio_ref:.4f}")
+
+# ── Gráficas ─────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Izquierda: precio vs reloj D
+ax = axes[0]
+ax.plot(df_paris["D (días)"], df_paris["Precio parisino"],
+        marker="o", color="steelblue", lw=2, label="Precio parisino")
+ax.axhline(precio_ref, color="crimson", ls="--", lw=1.5,
+           label=f"Call europea = {precio_ref:.2f}")
+ax.set_title("Precio de call parisina vs reloj D")
+ax.set_xlabel("D (días consecutivos bajo barrera)")
+ax.set_ylabel("Precio (USD)")
+ax.legend(fontsize=9)
+
+# Derecha: trayectorias de muestra con barrera
+ax2 = axes[1]
+n_ej = 60
+for i in range(n_ej):
+    color = "tomato" if (bajo_barrera[1:, i].cumsum() == 0).all() else "steelblue"
+    ax2.plot(S_l5[:, i], lw=0.4, alpha=0.5, color="steelblue")
+ax2.axhline(H_L5, color="crimson", lw=2, ls="--", label=f"Barrera H={H_L5}")
+ax2.axhline(K_L5, color="black",   lw=1, ls=":",  label=f"Strike K={K_L5}")
+ax2.set_title(f"Trayectorias simuladas y barrera – {TICKER_L5}")
+ax2.set_xlabel("Pasos temporales")
+ax2.set_ylabel("Precio")
+ax2.legend(fontsize=9)
+
+plt.tight_layout()
+plt.savefig("lab5_parisina.png", bbox_inches="tight")
+plt.show()
+
+print("\nTabla de precios parisinos:")
+print(df_paris.to_string(index=False))
+print("\nInterpretación: A mayor D, el precio parisino converge al precio")
+print("europeo estándar, pues se vuelve más difícil desactivar la opción.")
