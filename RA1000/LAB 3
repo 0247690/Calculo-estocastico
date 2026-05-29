@@ -1,0 +1,87 @@
+print("\n" + "=" * 60)
+print("  LABORATORIO 3: Valuación Monte Carlo – Opción Europea")
+print("=" * 60)
+
+# ── Parámetros configurables ─────────────────────────────────
+TICKER_L3  = "SPY"
+INICIO_L3  = "2021-01-01"
+FIN_L3     = "2024-01-01"
+K          = 450.0       # Strike (ajusta al nivel actual de SPY)
+T          = 1.0         # Vencimiento en años
+r          = 0.05        # Tasa libre de riesgo anualizada
+N_SIM      = 100_000     # Trayectorias Monte Carlo
+TIPO       = "call"      # "call" o "put"
+SEED_L3    = 0
+
+# ── Calibración de σ con datos históricos ───────────────────
+datos_l3   = yf.download(TICKER_L3, start=INICIO_L3, end=FIN_L3,
+                          auto_adjust=True, progress=False)["Close"].dropna()
+log_ret_l3 = np.log(datos_l3 / datos_l3.shift(1)).dropna()
+sigma_l3   = (log_ret_l3.std() * np.sqrt(252)).iloc[0]
+S0_l3      = float(datos_l3.iloc[-1])
+
+print(f"\nActivo: {TICKER_L3}  |  S0 = {S0_l3:.2f}  |  K = {K}")
+print(f"σ histórica = {sigma_l3:.4f}  |  r = {r}  |  T = {T} año")
+print(f"Tipo: {TIPO.upper()}  |  Simulaciones: {N_SIM:,}")
+
+# ── Paso 3: Simulación neutral al riesgo ─────────────────────
+np.random.seed(SEED_L3)
+Z_l3 = np.random.standard_normal(N_SIM)
+ST   = S0_l3 * np.exp((r - 0.5 * sigma_l3**2) * T + sigma_l3 * np.sqrt(T) * Z_l3)
+
+# ── Paso 4 & 5: Payoff y descuento ───────────────────────────
+if TIPO == "call":
+    payoffs = np.maximum(ST - K, 0)
+else:
+    payoffs = np.maximum(K - ST, 0)
+
+precio_mc = np.exp(-r * T) * payoffs.mean()
+error_mc  = np.exp(-r * T) * payoffs.std() / np.sqrt(N_SIM)
+ic_inf    = precio_mc - 1.96 * error_mc
+ic_sup    = precio_mc + 1.96 * error_mc
+
+# ── Black-Scholes analítico (referencia) ─────────────────────
+def bs_precio(S, K, T, r, sigma, tipo="call"):
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if tipo == "call":
+        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    else:
+        return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+precio_bs = bs_precio(S0_l3, K, T, r, sigma_l3, TIPO)
+
+print(f"\nResultados:")
+print(f"  Precio Monte Carlo     : {precio_mc:.4f}")
+print(f"  Error estándar MC      : {error_mc:.4f}")
+print(f"  IC 95%                 : [{ic_inf:.4f}, {ic_sup:.4f}]")
+print(f"  Precio Black-Scholes   : {precio_bs:.4f}")
+print(f"  Diferencia BS – MC     : {abs(precio_bs - precio_mc):.4f}")
+
+# ── Gráfica ──────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Distribución de ST
+ax = axes[0]
+ax.hist(ST, bins=80, density=True, color="steelblue", alpha=0.7)
+ax.axvline(K, color="crimson", lw=2, ls="--", label=f"Strike K={K}")
+ax.axvline(S0_l3, color="black", lw=1.5, ls=":", label=f"S₀={S0_l3:.1f}")
+ax.set_title(f"Distribución de S_T – {TICKER_L3}")
+ax.set_xlabel("Precio terminal")
+ax.legend(fontsize=9)
+
+# Distribución de payoffs descontados
+ax2 = axes[1]
+payoffs_desc = np.exp(-r * T) * payoffs
+ax2.hist(payoffs_desc[payoffs_desc > 0], bins=60,
+         density=True, color="seagreen", alpha=0.7)
+ax2.axvline(precio_mc, color="crimson", lw=2, label=f"Precio MC={precio_mc:.2f}")
+ax2.axvline(precio_bs, color="orange", lw=2, ls="--",
+            label=f"Precio BS={precio_bs:.2f}")
+ax2.set_title(f"Payoffs descontados (in-the-money) – {TIPO.upper()}")
+ax2.set_xlabel("Payoff descontado")
+ax2.legend(fontsize=9)
+
+plt.tight_layout()
+plt.savefig("lab3_montecarlo.png", bbox_inches="tight")
+plt.show()
