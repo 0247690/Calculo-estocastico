@@ -1,0 +1,112 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import yfinance as yf
+from scipy.stats import norm
+import warnings
+warnings.filterwarnings("ignore")
+
+# Configuración general de gráficas
+plt.rcParams.update({
+    "figure.dpi": 120,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "font.size": 11,
+})
+
+# ============================================================
+#  LABORATORIO 1
+#  Estimación de un Movimiento Browniano Geométrico (GBM)
+#  con datos reales de una acción
+# ============================================================
+
+print("=" * 60)
+print("  LABORATORIO 1: Estimación de GBM con datos reales")
+print("=" * 60)
+
+# ── Parámetros configurables ─────────────────────────────────
+TICKER_L1   = "AAPL"          # Cambia por MSFT o SPY si prefieres
+INICIO_L1   = "2021-01-01"
+FIN_L1      = "2024-01-01"
+N_TRAY_L1   = 50              # Número de trayectorias simuladas
+SEED_L1     = 42
+
+# ── Paso 1: Descarga de precios ajustados ────────────────────
+datos_l1 = yf.download(TICKER_L1, start=INICIO_L1, end=FIN_L1,
+                       auto_adjust=True, progress=False)["Close"]
+datos_l1 = datos_l1.dropna()
+print(f"\nActivo: {TICKER_L1}  |  Periodo: {INICIO_L1} → {FIN_L1}")
+print(f"Observaciones: {len(datos_l1)}")
+
+# ── Paso 2: Log-retornos diarios ─────────────────────────────
+log_ret_l1 = np.log(datos_l1 / datos_l1.shift(1)).dropna()
+
+# ── Paso 3 & 4: Estimación y anualización ────────────────────
+m_hat = log_ret_l1.mean()       # media muestral diaria
+s_hat = log_ret_l1.std()        # desv. estándar muestral diaria
+
+mu_hat    = float(252 * m_hat + 0.5 * (252 * s_hat**2))
+sigma_hat = float(np.sqrt(252) * s_hat)
+
+print(f"\nParámetros estimados (anualizados):")
+print(f"  µ  (drift)      = {mu_hat:.4f}  ({mu_hat*100:.2f}%)")
+print(f"  σ  (volatilidad)= {sigma_hat:.4f}  ({sigma_hat*100:.2f}%)")
+
+# ── Paso 5: Simulación de trayectorias GBM ──────────────────
+np.random.seed(SEED_L1)
+T_dias  = len(datos_l1)
+dt      = 1 / 252
+S0      = float(datos_l1.iloc[0])
+
+# Matriz de trayectorias (T_dias × N_TRAY_L1)
+Z = np.random.standard_normal((T_dias - 1, N_TRAY_L1))
+incrementos = (mu_hat - 0.5 * sigma_hat**2) * dt + sigma_hat * np.sqrt(dt) * Z
+log_S  = np.vstack([np.zeros((1, N_TRAY_L1)),
+                    np.cumsum(incrementos, axis=0)])
+tray   = S0 * np.exp(log_S)
+
+# Bandas percentílicas
+p5  = np.percentile(tray, 5,  axis=1)
+p50 = np.percentile(tray, 50, axis=1)
+p95 = np.percentile(tray, 95, axis=1)
+
+# ── Paso 6: Comparación visual ───────────────────────────────
+fechas = datos_l1.index
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Gráfica izquierda: trayectorias simuladas + banda
+ax = axes[0]
+ax.fill_between(range(T_dias), p5, p95, alpha=0.25,
+                color="steelblue", label="Banda 5–95%")
+ax.plot(p50, color="steelblue", lw=1.5, label="Mediana simulada")
+ax.plot(datos_l1.values, color="crimson", lw=2, label="Precio histórico")
+ax.set_title(f"GBM vs precio histórico – {TICKER_L1}")
+ax.set_xlabel("Días")
+ax.set_ylabel("Precio (USD)")
+ax.legend(fontsize=9)
+
+# Gráfica derecha: distribución de log-retornos
+ax2 = axes[1]
+ax2.hist(log_ret_l1, bins=60, density=True,
+         color="steelblue", alpha=0.7, label="Log-retornos")
+x_grid = np.linspace(log_ret_l1.min(), log_ret_l1.max(), 300)
+ax2.plot(x_grid,
+         norm.pdf(x_grid, m_hat.iloc[0], s_hat.iloc[0]),
+         color="crimson", lw=2, label="Normal ajustada")
+ax2.set_title("Distribución de log-retornos diarios")
+ax2.set_xlabel("Log-retorno")
+ax2.legend(fontsize=9)
+
+plt.tight_layout()
+plt.savefig("lab1_gbm.png", bbox_inches="tight")
+plt.show()
+
+print("\nTabla resumen:")
+tabla_l1 = pd.DataFrame({
+    "Parámetro": ["µ anualizado", "σ anualizado", "m diario", "s diario"],
+    "Valor":     [f"{mu_hat:.4f}", f"{sigma_hat:.4f}",
+                  f"{m_hat.iloc[0]:.6f}", f"{s_hat.iloc[0]:.6f}"]
+})
+print(tabla_l1.to_string(index=False))
+print("\nDiscusión: El GBM captura la tendencia y el orden de magnitud de la")
+print("volatilidad, pero no las colas gruesas ni el clustering observados.")
