@@ -1,0 +1,105 @@
+print("\n" + "=" * 60)
+print("  LABORATORIO 4: Opción Americana – Longstaff-Schwartz")
+print("=" * 60)
+
+# ── Parámetros configurables ─────────────────────────────────
+TICKER_L4  = "SPY"
+INICIO_L4  = "2021-01-01"
+FIN_L4     = "2024-01-01"
+K_L4       = 450.0
+T_L4       = 1.0
+r_L4       = 0.05
+N_SIM_L4   = 50_000
+N_PASOS_L4 = 252          # pasos diarios
+SEED_L4    = 7
+
+# ── Calibración ─────────────────────────────────────────────
+datos_l4   = yf.download(TICKER_L4, start=INICIO_L4, end=FIN_L4,
+                          auto_adjust=True, progress=False)["Close"].dropna()
+log_ret_l4 = np.log(datos_l4 / datos_l4.shift(1)).dropna()
+sigma_l4   = (log_ret_l4.std() * np.sqrt(252)).iloc[0]
+S0_l4      = float(datos_l4.iloc[-1])
+
+print(f"\nActivo: {TICKER_L4}  |  S0 = {S0_l4:.2f}  |  K = {K_L4}")
+print(f"σ = {sigma_l4:.4f}  |  r = {r_L4}  |  T = {T_L4}")
+print(f"Simulaciones: {N_SIM_L4:,}  |  Pasos: {N_PASOS_L4}")
+
+# ── Simulación de trayectorias bajo Q ────────────────────────
+np.random.seed(SEED_L4)
+dt_l4   = T_L4 / N_PASOS_L4
+factor  = np.exp((r_L4 - 0.5 * sigma_l4**2) * dt_l4)
+difus   = sigma_l4 * np.sqrt(dt_l4)
+
+# Trayectorias con antithetic variates para reducir varianza
+Z_raw   = np.random.standard_normal((N_PASOS_L4, N_SIM_L4 // 2))
+Z_all   = np.concatenate([Z_raw, -Z_raw], axis=1)
+
+S_tray  = np.zeros((N_PASOS_L4 + 1, N_SIM_L4))
+S_tray[0] = S0_l4
+for t in range(1, N_PASOS_L4 + 1):
+    S_tray[t] = S_tray[t - 1] * factor * np.exp(difus * Z_all[t - 1])
+
+# ── Algoritmo Longstaff-Schwartz (regresión hacia atrás) ─────
+df_l4   = np.exp(-r_L4 * dt_l4)   # factor de descuento por paso
+
+# Payoff en vencimiento (put americana)
+payoff_venc = np.maximum(K_L4 - S_tray[-1], 0)
+flujo       = payoff_venc.copy()
+
+for t in range(N_PASOS_L4 - 1, 0, -1):
+    St        = S_tray[t]
+    ej_inmad  = np.maximum(K_L4 - St, 0)
+    itm       = ej_inmad > 0           # solo paths in-the-money
+
+    if itm.sum() < 10:
+        flujo = flujo * df_l4
+        continue
+
+    # Regresión: valor de continuación ~ 1 + S + S²
+    X = St[itm]
+    Y = flujo[itm] * df_l4            # valor continuación descontado un paso
+    A = np.column_stack([np.ones_like(X), X, X**2])
+    coef, _, _, _ = np.linalg.lstsq(A, Y, rcond=None)
+    cont_hat = A @ coef
+
+    # Ejercer si payoff_inmediato > valor_continuación estimado
+    ejercer        = np.zeros(N_SIM_L4, dtype=bool)
+    ejercer[itm]   = ej_inmad[itm] >= cont_hat
+    flujo[ejercer] = ej_inmad[ejercer]
+    flujo[~ejercer] = flujo[~ejercer] * df_l4
+
+precio_am  = flujo.mean() * df_l4
+error_am   = flujo.std() / np.sqrt(N_SIM_L4)
+
+# ── Precio europeo de referencia ────────────────────────────
+# The bs_precio function was defined in a previous cell (lab 3)
+# but is not available in the current execution context (new cell).
+# I will add the function definition here to ensure it's available.
+def bs_precio(S, K, T, r, sigma, tipo="call"):
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if tipo == "call":
+        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    else:
+        return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+precio_eu_bs = bs_precio(S0_l4, K_L4, T_L4, r_L4, sigma_l4, "put")
+
+print(f"\nResultados:")
+print(f"  Precio PUT Americana (LSM) : {precio_am:.4f}  ± {error_am:.4f}")
+print(f"  Precio PUT Europea  (BS)   : {precio_eu_bs:.4f}")
+print(f"  Prima ejercicio temprano   : {precio_am - precio_eu_bs:.4f}")
+
+# ── Gráfica de trayectorias muestrales ───────────────────────
+fig, ax = plt.subplots(figsize=(12, 5))
+for i in range(min(80, N_SIM_L4)):
+    ax.plot(S_tray[:, i], lw=0.4, alpha=0.4, color="steelblue")
+ax.axhline(K_L4, color="crimson", lw=2, ls="--", label=f"Strike K={K_L4}")
+ax.axhline(S0_l4, color="black", lw=1, ls=":", label=f"S₀={S0_l4:.1f}")
+ax.set_title(f"Trayectorias simuladas bajo Q – {TICKER_L4} (muestra 80 paths)")
+ax.set_xlabel("Pasos temporales")
+ax.set_ylabel("Precio")
+ax.legend(fontsize=9)
+plt.tight_layout()
+plt.savefig("lab4_longstaff.png", bbox_inches="tight")
+plt.show()
